@@ -6,6 +6,43 @@ import 'package:image_picker/image_picker.dart';
 import '../services/google_document_ai_service.dart';
 import '../services/document_scanner_service.dart';
 
+/// Editable product - user tomonidan o'zgartirilishi mumkin
+class EditableProduct {
+  final TextEditingController nameController;
+  final TextEditingController quantityController;
+  final TextEditingController unitController;
+  final TextEditingController priceController;
+
+  bool isEditing = false;
+
+  EditableProduct({
+    required String name,
+    required int quantity,
+    String? unit,
+    double? price,
+  })  : nameController = TextEditingController(text: name),
+        quantityController = TextEditingController(text: quantity.toString()),
+        unitController = TextEditingController(text: unit ?? ''),
+        priceController = TextEditingController(text: price?.toString() ?? '');
+
+  // ProductItem ga konvert qilish
+  ProductItem toProductItem() {
+    return ProductItem(
+      name: nameController.text,
+      quantity: int.tryParse(quantityController.text) ?? 1,
+      unit: unitController.text.isEmpty ? null : unitController.text,
+      price: priceController.text.isEmpty ? null : double.tryParse(priceController.text),
+    );
+  }
+
+  void dispose() {
+    nameController.dispose();
+    quantityController.dispose();
+    unitController.dispose();
+    priceController.dispose();
+  }
+}
+
 class DocumentAIInvoicePage extends StatefulWidget {
   const DocumentAIInvoicePage({super.key});
 
@@ -25,6 +62,9 @@ class _DocumentAIInvoicePageState extends State<DocumentAIInvoicePage> {
   Map<String, dynamic>? _documentAIResponse;
   String? _fullText;
   List<ProductItem>? _extractedProducts;
+
+  // Editable products - user o'zgartirishi mumkin
+  List<EditableProduct>? _editableProducts;
 
   // Statistika
   int _totalPages = 0;
@@ -129,6 +169,18 @@ class _DocumentAIInvoicePageState extends State<DocumentAIInvoicePage> {
       // Agar entities bo'sh bo'lsa, raw text dan regex bilan parse qilish
       if (_extractedProducts == null || _extractedProducts!.isEmpty) {
         _extractedProducts = _extractProductsFromText(_fullText ?? '');
+      }
+
+      // Editable products yaratish
+      if (_extractedProducts != null && _extractedProducts!.isNotEmpty) {
+        _editableProducts = _extractedProducts!.map((product) {
+          return EditableProduct(
+            name: product.name,
+            quantity: product.quantity,
+            unit: product.unit,
+            price: product.price,
+          );
+        }).toList();
       }
 
       // Confidence score ni hisoblash
@@ -269,19 +321,129 @@ class _DocumentAIInvoicePageState extends State<DocumentAIInvoicePage> {
   }
 
   void _resetState() {
+    // Dispose all controllers
+    if (_editableProducts != null) {
+      for (var product in _editableProducts!) {
+        product.dispose();
+      }
+    }
+
     setState(() {
       _imageFile = null;
       _documentAIResponse = null;
       _fullText = null;
       _extractedProducts = null;
+      _editableProducts = null;
       _totalPages = 0;
       _confidence = 0;
     });
   }
 
+  @override
+  void dispose() {
+    // Dispose all controllers
+    if (_editableProducts != null) {
+      for (var product in _editableProducts!) {
+        product.dispose();
+      }
+    }
+    super.dispose();
+  }
+
   void _showMessage(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
+    );
+  }
+
+  Future<void> _submitToAPI() async {
+    if (_editableProducts == null || _editableProducts!.isEmpty) {
+      _showMessage('Yuborishga mahsulot yo\'q');
+      return;
+    }
+
+    // Hamma mahsulotlarni validate qilish
+    for (var product in _editableProducts!) {
+      if (!_validateProduct(product)) {
+        _showMessage('Iltimos barcha mahsulotlarni to\'g\'ri to\'ldiring');
+        return;
+      }
+    }
+
+    // Editable products dan ProductItem ga convert qilish
+    final productsToSubmit = _editableProducts!.map((ep) => ep.toProductItem()).toList();
+
+    // JSON format
+    final jsonData = {
+      'products': productsToSubmit.map((p) => p.toJson()).toList(),
+      'total_count': productsToSubmit.length,
+      'submitted_at': DateTime.now().toIso8601String(),
+    };
+
+    // API ga yuborish (hozircha faqat ko'rsatish)
+    debugPrint('📤 API ga yuborilmoqda:');
+    debugPrint(const JsonEncoder.withIndent('  ').convert(jsonData));
+
+    // Dialog orqali tasdiqlash
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.check_circle, color: Colors.green.shade600, size: 28),
+            const SizedBox(width: 12),
+            const Text('Tayyor!'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${productsToSubmit.length} ta mahsulot tayyorlandi',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                const JsonEncoder.withIndent('  ').convert(jsonData),
+                style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Bu ma\'lumotlarni API endpointingizga yuboring',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(
+                text: const JsonEncoder.withIndent('  ').convert(jsonData),
+              ));
+              Navigator.pop(context);
+              _showMessage('JSON nusxalandi');
+            },
+            child: const Text('Nusxalash'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              // TODO: Actual API call
+              // await apiService.submitProducts(productsToSubmit);
+              _showMessage('API ga yuborildi (demo)');
+            },
+            child: const Text('Yuborish'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -861,6 +1023,45 @@ class _DocumentAIInvoicePageState extends State<DocumentAIInvoicePage> {
                       const SizedBox(height: 12),
                     ],
 
+                    // Submit button - API ga yuborish
+                    Container(
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [Colors.green.shade600, Colors.green.shade500],
+                        ),
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.green.shade200,
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: ElevatedButton.icon(
+                        onPressed: _submitToAPI,
+                        icon: const Icon(Icons.cloud_upload, color: Colors.white),
+                        label: const Text(
+                          'API ga yuborish',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          shadowColor: Colors.transparent,
+                          padding: const EdgeInsets.all(16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
                     // Action buttons
                     Row(
                       children: [
@@ -1017,15 +1218,24 @@ class _DocumentAIInvoicePageState extends State<DocumentAIInvoicePage> {
   }
 
   Widget _buildProductCard(ProductItem product, int index) {
+    if (_editableProducts == null || index > _editableProducts!.length) {
+      return const SizedBox.shrink();
+    }
+
+    final editableProduct = _editableProducts![index - 1];
+
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.blue.shade100, width: 2),
+        border: Border.all(
+          color: editableProduct.isEditing ? Colors.orange.shade300 : Colors.blue.shade100,
+          width: 2,
+        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.blue.shade50,
+            color: editableProduct.isEditing ? Colors.orange.shade50 : Colors.blue.shade50,
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -1033,150 +1243,259 @@ class _DocumentAIInvoicePageState extends State<DocumentAIInvoicePage> {
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Column(
           children: [
-            // Index badge - premium style
-            Container(
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Colors.blue.shade700, Colors.blue.shade500],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.blue.shade300,
-                    blurRadius: 8,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-              ),
-              child: Center(
-                child: Text(
-                  '$index',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 16),
-
-            // Product info
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Mahsulot nomi
-                  Text(
-                    product.name,
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.grey.shade800,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Index badge
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: editableProduct.isEditing
+                          ? [Colors.orange.shade700, Colors.orange.shade500]
+                          : [Colors.blue.shade700, Colors.blue.shade500],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
-                  ),
-                  const SizedBox(height: 12),
-
-                  // Miqdor va narx - bir qatorda
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      // Miqdor - gradient style
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [Colors.green.shade500, Colors.green.shade400],
-                          ),
-                          borderRadius: BorderRadius.circular(20),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.green.shade200,
-                              blurRadius: 6,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.inventory_2_outlined,
-                              size: 16,
-                              color: Colors.white,
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              '${product.quantity}${product.unit != null ? ' ${product.unit}' : ''}',
-                              style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ],
-                        ),
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: editableProduct.isEditing ? Colors.orange.shade300 : Colors.blue.shade300,
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
                       ),
-
-                      // Narx (agar mavjud bo'lsa) - gradient style
-                      if (product.price != null)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 8,
-                          ),
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [Colors.orange.shade500, Colors.orange.shade400],
-                            ),
-                            borderRadius: BorderRadius.circular(20),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.orange.shade200,
-                                blurRadius: 6,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(
-                                Icons.payments_outlined,
-                                size: 16,
-                                color: Colors.white,
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                product.price!.toStringAsFixed(2),
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
                     ],
                   ),
-                ],
-              ),
+                  child: Center(
+                    child: Text(
+                      '$index',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+
+                // Product info
+                Expanded(
+                  child: editableProduct.isEditing
+                      ? _buildEditableFields(editableProduct)
+                      : _buildDisplayFields(editableProduct),
+                ),
+
+                // Edit/Save button
+                IconButton(
+                  icon: Icon(
+                    editableProduct.isEditing ? Icons.check_circle : Icons.edit,
+                    color: editableProduct.isEditing ? Colors.green.shade600 : Colors.blue.shade600,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      if (editableProduct.isEditing) {
+                        // Validate before saving
+                        if (_validateProduct(editableProduct)) {
+                          editableProduct.isEditing = false;
+                          _showMessage('Saqlandi');
+                        }
+                      } else {
+                        editableProduct.isEditing = true;
+                      }
+                    });
+                  },
+                ),
+              ],
             ),
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildDisplayFields(EditableProduct product) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Mahsulot nomi
+        Text(
+          product.nameController.text,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: Colors.grey.shade800,
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // Miqdor va narx
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            // Miqdor
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Colors.green.shade500, Colors.green.shade400],
+                ),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.green.shade200,
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.inventory_2_outlined, size: 16, color: Colors.white),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${product.quantityController.text}${product.unitController.text.isNotEmpty ? ' ${product.unitController.text}' : ''}',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Narx
+            if (product.priceController.text.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.orange.shade500, Colors.orange.shade400],
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.orange.shade200,
+                      blurRadius: 6,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.payments_outlined, size: 16, color: Colors.white),
+                    const SizedBox(width: 6),
+                    Text(
+                      double.tryParse(product.priceController.text)?.toStringAsFixed(2) ?? product.priceController.text,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEditableFields(EditableProduct product) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Mahsulot nomi
+        TextField(
+          controller: product.nameController,
+          decoration: InputDecoration(
+            labelText: 'Mahsulot nomi',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          ),
+          style: const TextStyle(fontSize: 14),
+        ),
+        const SizedBox(height: 12),
+
+        Row(
+          children: [
+            // Miqdor
+            Expanded(
+              flex: 2,
+              child: TextField(
+                controller: product.quantityController,
+                decoration: InputDecoration(
+                  labelText: 'Miqdor',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+                keyboardType: TextInputType.number,
+                style: const TextStyle(fontSize: 14),
+              ),
+            ),
+            const SizedBox(width: 8),
+
+            // Birlik
+            Expanded(
+              flex: 1,
+              child: TextField(
+                controller: product.unitController,
+                decoration: InputDecoration(
+                  labelText: 'Birlik',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+                style: const TextStyle(fontSize: 14),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        // Narx
+        TextField(
+          controller: product.priceController,
+          decoration: InputDecoration(
+            labelText: 'Narx (ixtiyoriy)',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          ),
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(fontSize: 14),
+        ),
+      ],
+    );
+  }
+
+  bool _validateProduct(EditableProduct product) {
+    if (product.nameController.text.trim().isEmpty) {
+      _showMessage('Mahsulot nomi bo\'sh bo\'lishi mumkin emas');
+      return false;
+    }
+
+    final quantity = int.tryParse(product.quantityController.text);
+    if (quantity == null || quantity <= 0) {
+      _showMessage('Miqdor musbat son bo\'lishi kerak');
+      return false;
+    }
+
+    final priceText = product.priceController.text.trim();
+    if (priceText.isNotEmpty) {
+      final price = double.tryParse(priceText);
+      if (price == null || price < 0) {
+        _showMessage('Narx to\'g\'ri formatda bo\'lishi kerak');
+        return false;
+      }
+    }
+
+    return true;
   }
 }
